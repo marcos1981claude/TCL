@@ -2,6 +2,7 @@
 TCL 65C6K — Daily Price Tracker
 Run this script daily at 23:00 ART via Windows Task Scheduler.
 """
+import subprocess
 import sys
 from datetime import date
 
@@ -10,6 +11,25 @@ import scrapers as scraper_module
 import notifier
 import storage
 from storage import PriceRecord
+
+
+def _push_data(today: str):
+    """Commit updated prices.csv and push to GitHub."""
+    cmds = [
+        ["git", "add", "data/prices.csv"],
+        ["git", "commit", "-m", f"data: precios {today}"],
+        ["git", "push"],
+    ]
+    for cmd in cmds:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            output = result.stdout + result.stderr
+            if "nothing to commit" in output:
+                print("  Sin cambios nuevos para subir.")
+                return
+            print(f"  Error en git ({' '.join(cmd[:2])}): {result.stderr.strip()}")
+            return
+    print("  Datos subidos a GitHub correctamente.")
 
 
 def check_alerts(record: dict, yesterday: dict[str, int | None]) -> list[str]:
@@ -101,6 +121,10 @@ def main():
         notifier.notify(triggered_records, reasons_summary)
     else:
         print("  Sin alertas — no se envían notificaciones.")
+
+    # 5. Push data to GitHub
+    print("\n[5/5] Actualizando GitHub...")
+    _push_data(today)
 
     print("\nDone.")
 

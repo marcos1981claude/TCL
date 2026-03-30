@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TCL 65C6K — Seguimiento de Precios</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #f4f6f9;
+      --surface:  #ffffff;
+      --border:   #e2e8f0;
+      --text:     #1a202c;
+      --muted:    #718096;
+      --accent:   #2b6cb0;
+      --green:    #276749;
+      --green-bg: #f0fff4;
+      --red:      #c53030;
+      --red-bg:   #fff5f5;
+    }
+
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+
+    header {
+      background: var(--accent);
+      color: #fff;
+      padding: 1.5rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .5rem;
+    }
+    header h1 { font-size: 1.4rem; font-weight: 700; }
+    header p  { font-size: .85rem; opacity: .85; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1rem; }
+
+    /* ── Section titles ── */
+    h2 { font-size: 1rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+         letter-spacing: .06em; margin-bottom: 1rem; }
+
+    /* ── Cards ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.2rem;
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+      transition: box-shadow .15s;
+    }
+    .card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+    .card .retailer { font-size: .8rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .card .price    { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+    .card .cuotas   { font-size: .78rem; color: var(--muted); }
+    .card .badge    { font-size: .7rem; font-weight: 600; padding: .2rem .55rem; border-radius: 99px; width: fit-content; }
+    .card .badge.sin-interes { background: var(--green-bg); color: var(--green); }
+    .card .drop     { font-size: .75rem; font-weight: 600; color: var(--red); }
+    .card .link     { font-size: .75rem; color: var(--accent); text-decoration: none; margin-top: .1rem; }
+    .card .link:hover { text-decoration: underline; }
+    .card.nd { opacity: .45; }
+
+    /* ── Chart ── */
+    .chart-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin-bottom: 2.5rem;
+    }
+    .chart-wrap canvas { max-height: 320px; }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: auto;
+      margin-bottom: 2rem;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: .87rem; }
+    thead tr { background: var(--bg); }
+    th { padding: .7rem 1rem; text-align: left; font-size: .75rem; font-weight: 600;
+         color: var(--muted); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+    td { padding: .65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--bg); }
+    td a { color: var(--accent); text-decoration: none; }
+    td a:hover { text-decoration: underline; }
+    .nd { color: var(--muted); font-style: italic; }
+    .si-badge { font-size: .7rem; background: var(--green-bg); color: var(--green);
+                font-weight: 600; padding: .15rem .4rem; border-radius: 99px; margin-left: .3rem; }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 3rem; color: var(--muted); }
+
+    /* ── Loader ── */
+    #loader { text-align: center; padding: 4rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>TCL 65C6K — Seguimiento de Precios</h1>
+    <p>Retailers argentinos · Actualización diaria</p>
+  </div>
+  <p id="last-updated"></p>
+</header>
+
+<main>
+  <div id="loader">Cargando datos…</div>
+  <div id="content" style="display:none">
+
+    <h2>Últimos precios</h2>
+    <div class="cards" id="cards"></div>
+
+    <h2>Evolución de precios</h2>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+    </div>
+
+    <h2>Historial completo</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Fecha</th>
+            <th>Retailer</th>
+            <th>Precio contado</th>
+            <th>12 cuotas / mes</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(',').map(h => h.trim());
+  return lines.slice(1).map(line => {
+    const vals = line.split(',');
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (vals[i] || '').trim());
+    return obj;
+  }).filter(r => r.date);
+}
+
+function fmtARS(val) {
+  if (!val || val === '' || val === 'None' || val === 'null') return null;
+  const n = parseInt(val, 10);
+  if (isNaN(n)) return null;
+  return n;
+}
+
+function displayARS(val) {
+  if (val === null) return null;
+  return '$' + val.toLocaleString('es-AR');
+}
+
+const RETAILER_COLORS = {
+  'Mercado Libre': '#f59e0b',
+  'Fravega':       '#ef4444',
+  'On City':       '#3b82f6',
+  'Naldo':         '#f97316',
+  'Cetrogar':      '#10b981',
+};
+
+function colorFor(retailer) {
+  return RETAILER_COLORS[retailer] || '#6366f1';
+}
+
+// ── Latest prices cards ───────────────────────────────────────────────────────
+
+function renderCards(rows) {
+  const latest = {};
+  const prev   = {};
+
+  // Find latest date per retailer
+  rows.forEach(r => {
+    const cur = latest[r.retailer];
+    if (!cur || r.date > cur.date) {
+      if (cur) prev[r.retailer] = cur;
+      latest[r.retailer] = r;
+    }
+  });
+
+  // Second pass: find second-latest for % change
+  rows.forEach(r => {
+    const lat = latest[r.retailer];
+    if (lat && r.date < lat.date) {
+      const p = prev[r.retailer];
+      if (!p || r.date > p.date) prev[r.retailer] = r;
+    }
+  });
+
+  const container = document.getElementById('cards');
+  const retailers = Object.keys(latest).sort();
+
+  if (retailers.length === 0) {
+    container.innerHTML = '<p class="empty">Sin datos aún.</p>';
+    return;
+  }
+
+  retailers.forEach(retailer => {
+    const rec   = latest[retailer];
+    const price = fmtARS(rec.cash_price_ars);
+    const cuota = fmtARS(rec.installment_12m_ars);
+    const si    = rec.interest_free === 'True';
+    const pRec  = prev[retailer];
+    const pPrev = pRec ? fmtARS(pRec.cash_price_ars) : null;
+
+    let dropHTML = '';
+    if (price && pPrev && price < pPrev) {
+      const pct = ((pPrev - price) / pPrev * 100).toFixed(1);
+      dropHTML = `<span class="drop">▼ ${pct}% vs día anterior</span>`;
+    }
+
+    const card = document.createElement('div');
+    card.className = 'card' + (price === null ? ' nd' : '');
+    card.style.borderTop = `3px solid ${colorFor(retailer)}`;
+
+    card.innerHTML = `
+      <span class="retailer">${retailer}</span>
+      <span class="price">${price !== null ? displayARS(price) : 'N/D'}</span>
+      ${cuota !== null ? `<span class="cuotas">12c: ${displayARS(cuota)}/mes${si ? ' <span class="badge sin-interes">sin interés</span>' : ''}</span>` : ''}
+      ${dropHTML}
+      ${rec.product_url && rec.product_url !== '' ? `<a class="link" href="${rec.product_url}" target="_blank">Ver producto →</a>` : ''}
+    `;
+    container.appendChild(card);
+  });
+}
+
+// ── Line chart ────────────────────────────────────────────────────────────────
+
+function renderChart(rows) {
+  const byRetailer = {};
+  rows.forEach(r => {
+    const price = fmtARS(r.cash_price_ars);
+    if (price === null) return;
+    if (!byRetailer[r.retailer]) byRetailer[r.retailer] = {};
+    byRetailer[r.retailer][r.date] = price;
+  });
+
+  const allDates = [...new Set(rows.map(r => r.date))].sort();
+  const retailers = Object.keys(byRetailer).sort();
+
+  if (allDates.length === 0 || retailers.length === 0) return;
+
+  const datasets = retailers.map(retailer => ({
+    label: retailer,
+    data: allDates.map(d => byRetailer[retailer][d] ?? null),
+    borderColor: colorFor(retailer),
+    backgroundColor: colorFor(retailer) + '22',
+    borderWidth: 2,
+    pointRadius: allDates.length > 30 ? 2 : 4,
+    spanGaps: true,
+    tension: 0.3,
+  }));
+
+  new Chart(document.getElementById('chart'), {
+    type: 'line',
+    data: { labels: allDates, datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.parsed.y !== null
+              ? ` ${ctx.dataset.label}: ${displayARS(ctx.parsed.y)}`
+              : ` ${ctx.dataset.label}: N/D`,
+          }
+        }
+      },
+      scales: {
+        y: {
+          ticks: {
+            callback: val => '$' + (val / 1_000_000).toFixed(2) + 'M'
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── History table ─────────────────────────────────────────────────────────────
+
+function renderTable(rows) {
+  const tbody = document.getElementById('tbody');
+  const sorted = [...rows].sort((a, b) => b.date.localeCompare(a.date) || a.retailer.localeCompare(b.retailer));
+
+  if (sorted.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">Sin datos aún.</td></tr>';
+    return;
+  }
+
+  sorted.forEach(r => {
+    const price = fmtARS(r.cash_price_ars);
+    const cuota = fmtARS(r.installment_12m_ars);
+    const si    = r.interest_free === 'True';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.date}</td>
+      <td><strong>${r.retailer}</strong></td>
+      <td>${price !== null ? displayARS(price) : '<span class="nd">N/D</span>'}</td>
+      <td>${cuota !== null ? displayARS(cuota) + '/mes' + (si ? '<span class="si-badge">sin interés</span>' : '') : '<span class="nd">—</span>'}</td>
+      <td>${r.product_url ? `<a href="${r.product_url}" target="_blank">Ver →</a>` : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  try {
+    const res = await fetch('data/prices.csv');
+    if (!res.ok) throw new Error('No se pudo cargar prices.csv');
+    const text = await res.text();
+    const rows = parseCSV(text);
+
+    document.getElementById('loader').style.display  = 'none';
+    document.getElementById('content').style.display = 'block';
+
+    if (rows.length > 0) {
+      const lastDate = [...rows].sort((a, b) => b.date.localeCompare(a.date))[0].date;
+      document.getElementById('last-updated').textContent = `Última actualización: ${lastDate}`;
+    }
+
+    renderCards(rows);
+    renderChart(rows);
+    renderTable(rows);
+  } catch (e) {
+    document.getElementById('loader').textContent = 'Error al cargar los datos: ' + e.message;
+  }
+}
+
+main();
+</script>
+
+</body>
+</html>
