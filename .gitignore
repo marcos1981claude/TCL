@@ -1,0 +1,14 @@
+# Environment
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Data (precio histórico local, no se versiona)
+data/
+
+# Debug scripts
+debug_*.py
