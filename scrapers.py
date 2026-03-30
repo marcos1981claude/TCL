@@ -1,10 +1,22 @@
 """
 Site-specific scrapers for each Argentine retailer.
 Uses Playwright (headless Chromium) to handle JS-rendered pages.
+Each scraper navigates directly to the known product URL.
 """
 import re
 import time
 from typing import Optional
+
+
+# ── URLs directas de producto ────────────────────────────────────────────────────
+
+PRODUCT_URLS = {
+    "Mercado Libre": "https://www.mercadolibre.com.ar/smart-tv-tcl-mini-led-smt-65p-4k-65c6k-google-tv/p/MLA57770372",
+    "Fravega":       "https://www.fravega.com/p/smart-tv-tcl-65-4k-mini-led-65c6k-google-tv-502880/",
+    "On City":       "https://www.oncity.com/smart-qd-mini-led-tv-tcl-65--qd-4k-3840-x-2160-65c6k-155162/p",
+    "Naldo":         "https://www.naldo.com.ar/65-l65c6k-miniled-4k-google-bt-ctrl-voz-505892-1/p?skuId=45298",
+    "Cetrogar":      "https://www.cetrogar.com.ar/smart-tv-tcl-65-mini-led-65c6k-uhd-google-tv-rv.html",
+}
 
 
 # ── Price parsing helpers ────────────────────────────────────────────────────────
@@ -25,9 +37,7 @@ def _parse_ars(text: str | None) -> Optional[int]:
 
 
 def _parse_installments(body: str) -> tuple[Optional[int], Optional[bool]]:
-    """
-    Parse 12-month installment amount and interest-free flag from page text.
-    """
+    """Parse 12-month installment amount and interest-free flag from page text."""
     patterns = [
         r"12\s*(?:cuotas?|meses?|x)\s*(?:sin\s*inter[eé]s\s*)?(?:de\s*)?\$\s*([\d.,]+)",
         r"12\s*(?:cuotas?|meses?|x)\s*(?:de\s*)?\$\s*([\d.,]+)",
@@ -57,14 +67,9 @@ def _find_price(page, selectors: list[str]) -> Optional[int]:
 
 
 def _extract_price_from_body(body: str, min_ars: int = 300_000, max_ars: int = 8_000_000) -> Optional[int]:
-    """
-    Fallback: find the first price in body text within the expected TV price range.
-    Ignores 'sin impuestos' sub-prices and installment amounts.
-    """
-    # Strip installment context lines to avoid false positives
+    """Fallback: find the first price in body text within the expected TV price range."""
     body_clean = re.sub(r"\d+\s*(?:cuotas?|meses?|x)\s*(?:sin\s*inter[eé]s\s*)?(?:de\s*)?\$[\d.,]+", "", body)
     body_clean = re.sub(r"sin\s*impuestos?\s*[\w\s]*\$[\d.,]+", "", body_clean, flags=re.IGNORECASE)
-
     for m in re.finditer(r"\$([\d.,]+)", body_clean):
         price = _parse_ars(m.group(1))
         if price and min_ars <= price <= max_ars:
@@ -74,19 +79,37 @@ def _extract_price_from_body(body: str, min_ars: int = 300_000, max_ars: int = 8
 
 # ── Base helper ──────────────────────────────────────────────────────────────────
 
-def _scrape(playwright_context, name: str, search_url: str, scrape_fn) -> dict:
-    page = playwright_context.new_page()
+def _scrape_direct(ctx, name: str, url: str, selectors: list[str], wait: int = 3) -> dict:
+    """
+    Navigate directly to a product URL and extract price + installments.
+    selectors: list of CSS selectors to try for the cash price.
+    """
+    page = ctx.new_page()
     result = {
         "retailer": name,
         "cash_price_ars": None,
         "installment_12m_ars": None,
         "interest_free": None,
-        "product_url": search_url,
+        "product_url": url,
     }
     try:
-        page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
-        time.sleep(2)
-        result.update(scrape_fn(page))
+        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        time.sleep(wait)
+
+        body = page.inner_text("body")
+
+        cash_price = _find_price(page, selectors)
+        if not cash_price:
+            cash_price = _extract_price_from_body(body)
+
+        installment, interest_free = _parse_installments(body)
+
+        result.update({
+            "cash_price_ars": cash_price,
+            "installment_12m_ars": installment,
+            "interest_free": interest_free,
+            "product_url": page.url,
+        })
     except Exception as e:
         print(f"[{name}] Error: {e}")
     finally:
@@ -97,79 +120,28 @@ def _scrape(playwright_context, name: str, search_url: str, scrape_fn) -> dict:
 # ── Mercado Libre ────────────────────────────────────────────────────────────────
 
 def scrape_mercadolibre(ctx) -> dict:
-    def _fn(page):
-        search_url = page.url
-        product_url = search_url
-        navigated = False
-        try:
-            # Try multiple link selectors for MeLi search results
-            selectors = [
-                "a.poly-component__title",
-                "a[class*='ui-search-link__title-card']",
-                "li.ui-search-layout__item h2 a",
-                "li.ui-search-layout__item a[href*='MLAr']",
-                "li.ui-search-layout__item a[href*='.com.ar']",
-            ]
-            for sel in selectors:
-                first = page.query_selector(sel)
-                if first:
-                    href = first.get_attribute("href")
-                    if href and "mercadolibre" in href:
-                        page.goto(href, wait_until="domcontentloaded", timeout=30_000)
-                        time.sleep(3)
-                        product_url = page.url
-                        navigated = (product_url != search_url)
-                        break
-        except Exception:
-            pass
-
-        body = page.inner_text("body")
-        cash_price = _find_price(page, [
+    return _scrape_direct(
+        ctx,
+        name="Mercado Libre",
+        url=PRODUCT_URLS["Mercado Libre"],
+        selectors=[
             ".ui-pdp-price__second-line .andes-money-amount__fraction",
-            "span.andes-money-amount__fraction",
+            ".andes-money-amount__fraction",
             ".price-tag-fraction",
-        ])
-        # Only use body fallback if we're on a product page
-        if not cash_price and navigated:
-            cash_price = _extract_price_from_body(body)
-
-        installment, interest_free = _parse_installments(body) if navigated else (None, None)
-
-        return {
-            "cash_price_ars": cash_price,
-            "installment_12m_ars": installment,
-            "interest_free": interest_free,
-            "product_url": product_url,
-        }
-
-    return _scrape(ctx, "Mercado Libre",
-                   "https://listado.mercadolibre.com.ar/tcl-65c6k",
-                   _fn)
+            "[class*='price-tag'] [class*='fraction']",
+        ],
+        wait=4,
+    )
 
 
 # ── Frávega ──────────────────────────────────────────────────────────────────────
 
 def scrape_fravega(ctx) -> dict:
-    def _fn(page):
-        try:
-            first = page.query_selector(
-                "a[data-test-id='product-card-link'], "
-                "a[href*='/p/'], article a, .ProductCard a"
-            )
-            if first:
-                href = first.get_attribute("href")
-                if href and not href.startswith("http"):
-                    href = "https://www.fravega.com" + href
-                if href:
-                    page.goto(href, wait_until="domcontentloaded", timeout=30_000)
-                    time.sleep(3)
-        except Exception:
-            pass
-
-        body = page.inner_text("body")
-
-        # Try CSS selectors first, then fall back to body text extraction
-        cash_price = _find_price(page, [
+    return _scrape_direct(
+        ctx,
+        name="Fravega",
+        url=PRODUCT_URLS["Fravega"],
+        selectors=[
             "[data-test-id='cash-price'] span",
             "[class*='CashPrice']",
             "[class*='cash-price']",
@@ -177,156 +149,66 @@ def scrape_fravega(ctx) -> dict:
             "[class*='current-price']",
             "span[class*='Price']",
             "span[class*='price']",
-        ])
-        if not cash_price:
-            cash_price = _extract_price_from_body(body)
-
-        installment, interest_free = _parse_installments(body)
-
-        return {
-            "cash_price_ars": cash_price,
-            "installment_12m_ars": installment,
-            "interest_free": interest_free,
-            "product_url": page.url,
-        }
-
-    return _scrape(ctx, "Fravega",
-                   "https://www.fravega.com/l/?keyword=TCL+65C6K",
-                   _fn)
+        ],
+        wait=3,
+    )
 
 
 # ── On City ──────────────────────────────────────────────────────────────────────
 
 def scrape_oncity(ctx) -> dict:
-    def _fn(page):
-        try:
-            first = page.query_selector(".product-item a, .product-card a, article a")
-            if first:
-                href = first.get_attribute("href")
-                if href and not href.startswith("http"):
-                    href = "https://www.oncity.com.ar" + href
-                page.goto(href, wait_until="domcontentloaded", timeout=30_000)
-                time.sleep(2)
-        except Exception:
-            pass
-
-        body = page.inner_text("body")
-        cash_price = _find_price(page, [
+    return _scrape_direct(
+        ctx,
+        name="On City",
+        url=PRODUCT_URLS["On City"],
+        selectors=[
             ".special-price .price",
             ".product-price-special",
             ".price-box .price",
+            "[class*='specialPrice']",
+            "[class*='finalPrice'] .price",
             "span[class*='price']",
-        ])
-        if not cash_price:
-            cash_price = _extract_price_from_body(body)
-
-        installment, interest_free = _parse_installments(body)
-
-        return {
-            "cash_price_ars": cash_price,
-            "installment_12m_ars": installment,
-            "interest_free": interest_free,
-            "product_url": page.url,
-        }
-
-    return _scrape(ctx, "On City",
-                   "https://www.oncity.com.ar/catalogsearch/result/?q=TCL+65C6K",
-                   _fn)
+        ],
+        wait=3,
+    )
 
 
 # ── Naldo ────────────────────────────────────────────────────────────────────────
 
 def scrape_naldo(ctx) -> dict:
-    def _fn(page):
-        search_url = page.url
-        navigated = False
-        try:
-            first = page.query_selector(
-                "a.product-item-link, .product-name a, "
-                "[class*='product-title'] a, article a"
-            )
-            if first:
-                title = (first.inner_text() or "").upper()
-                href = first.get_attribute("href") or ""
-                # Only navigate if the product is TCL-related
-                if "TCL" in title or "TCL" in href.upper() or "65C6K" in href.upper():
-                    page.goto(href, wait_until="domcontentloaded", timeout=30_000)
-                    time.sleep(2)
-                    navigated = (page.url != search_url)
-        except Exception:
-            pass
-
-        if not navigated:
-            return {
-                "cash_price_ars": None,
-                "installment_12m_ars": None,
-                "interest_free": None,
-                "product_url": search_url,
-            }
-
-        body = page.inner_text("body")
-        cash_price = _find_price(page, [
+    return _scrape_direct(
+        ctx,
+        name="Naldo",
+        url=PRODUCT_URLS["Naldo"],
+        selectors=[
             ".special-price .price",
             ".price-box .price",
             ".product-info-price .price",
+            "[class*='skuBestPrice']",
+            "[class*='bestPrice']",
             "span[class*='price']",
-        ])
-        if not cash_price:
-            cash_price = _extract_price_from_body(body)
-
-        installment, interest_free = _parse_installments(body)
-
-        return {
-            "cash_price_ars": cash_price,
-            "installment_12m_ars": installment,
-            "interest_free": interest_free,
-            "product_url": page.url,
-        }
-
-    return _scrape(ctx, "Naldo",
-                   "https://www.naldo.com.ar/buscar?q=TCL+65C6K",
-                   _fn)
+        ],
+        wait=3,
+    )
 
 
 # ── Cetrogar ─────────────────────────────────────────────────────────────────────
 
 def scrape_cetrogar(ctx) -> dict:
-    def _fn(page):
-        try:
-            first = page.query_selector(".product-item-link, .product-name a, article a")
-            if first:
-                href = first.get_attribute("href")
-                if href:
-                    if not href.startswith("http"):
-                        href = "https://www.cetrogar.com.ar" + href
-                    page.goto(href, wait_until="domcontentloaded", timeout=30_000)
-                    time.sleep(2)
-        except Exception:
-            pass
-
-        body = page.inner_text("body")
-        cash_price = _find_price(page, [
+    return _scrape_direct(
+        ctx,
+        name="Cetrogar",
+        url=PRODUCT_URLS["Cetrogar"],
+        selectors=[
             ".special-price .price",
             "[data-price-type='finalPrice'] .price",
             ".price-box .special-price .price",
             ".price-box .price",
             "span[class*='precio']",
-        ])
-        if not cash_price:
-            cash_price = _extract_price_from_body(body)
-
-        installment, interest_free = _parse_installments(body)
-
-        return {
-            "cash_price_ars": cash_price,
-            "installment_12m_ars": installment,
-            "interest_free": interest_free,
-            "product_url": page.url,
-        }
-
-    return _scrape(ctx, "Cetrogar",
-                   "https://www.cetrogar.com.ar/catalogsearch/result/?q=TCL+65C6K",
-                   _fn)
+            "span[class*='price']",
+        ],
+        wait=3,
+    )
 
 
 # ── Run all scrapers ─────────────────────────────────────────────────────────────
